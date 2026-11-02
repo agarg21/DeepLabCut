@@ -269,6 +269,7 @@ jobs:
           import os
           import subprocess
           import sys
+          from concurrent.futures import ThreadPoolExecutor
 
           def is_windows_python_3_11_or_greater() -> bool:
               """Aligned with pyproject: .[tf*] omits TensorFlow on Windows for Python 3.11+."""
@@ -288,6 +289,7 @@ jobs:
                   print("No functional scripts selected; skipping functional tests.")
                   raise SystemExit(0)
 
+          to_run = []
           for script in scripts:
               if "tensorflow" in script and is_windows_python_3_11_or_greater():
                   ver = f"{sys.version_info.major}.{sys.version_info.minor}"
@@ -295,10 +297,24 @@ jobs:
                       f"Skipping TensorFlow example on Windows {ver} (no TF in .[tf*] for 3.11+): {script}"
                   )
                   continue
-              print("Running:", script)
-              rc = subprocess.call([sys.executable, script])
-              if rc != 0:
-                  raise SystemExit(rc)
+              to_run.append(script)
+
+          # The scripts use their own project directories, so they can run side by
+          # side. Output is held back per script to keep the logs readable.
+          def run(script):
+              return script, subprocess.run(
+                  [sys.executable, script], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace"
+              )
+
+          failed = False
+          with ThreadPoolExecutor(max_workers=2) as pool:
+              for script, result in pool.map(run, to_run):
+                  print(f"::group::{script} (exit {result.returncode})")
+                  print(result.stdout, flush=True)
+                  print("::endgroup::")
+                  failed = failed or result.returncode != 0
+          if failed:
+              raise SystemExit(1)
           PY
 
       - name: Report continue-on-error failures
